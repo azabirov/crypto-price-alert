@@ -3,6 +3,11 @@ import requests  # Для выполнения HTTP-запросов к API
 import pandas as pd  # Для работы с данными в виде таблиц (DataFrame)
 import time  # Для работы со временем, задержками и таймерами
 
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, CallbackContext
+
+bot_token = "TELEGRAM_BOT_TOKEN"
+
 # Указываем свои ключи API и секретный ключ для доступа к Binance API
 api_key = "API_KEY"
 secret_key = "SECRET_KEY"
@@ -85,20 +90,34 @@ def moving_average(data, period):
     return df["ma"].tolist()
 
 
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    data = {"chat_id": chat_id, "text": text}
+    requests.post(url, data=data)
+
+
 # Функция для отправки уведомления об изменении цены
-def alert(change):
+def alert(chat_id, change):
     # Если абсолютное значение изменения больше или равно 1%
     if abs(change) >= 1:
         # Определяем направление изменения
         direction = "вверх" if change > 0 else "вниз"
         # Формируем сообщение
         message = f"Цена фьючерса ETHUSDT изменилась на {change:.2f}% {direction} за последний час."
-        # Выводим сообщение на экран
-        return message
+        # Отправляем сообщение в чат
+        send_message(chat_id, message)
+
+# Функция обработчика команды /start
+def start(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    # Отправка приветственного сообщения
+    send_message(chat_id, "Привет! Я запущен и начинаю отслеживание цен фьючерсов. Буду уведомлять об изменениях!")
+    # Запуск функции main с chat_id
+    main(chat_id)
 
 
 # Основная функция
-def main():
+def main(chat_id):
     # Задаем интервал времени между проверками цены (в секундах)
     interval = 3
 
@@ -109,11 +128,7 @@ def main():
             eth_price = get_eth_price()
             btc_price = get_btc_price()
 
-            eth_btc_ratio = get_eth_price() / get_btc_price()
-
-            # Вычисляем скорректированную цену ETH
-            # adjusted_eth_price = get_adjusted_eth_price(eth_price, btc_price)
-
+            eth_btc_ratio = eth_price / btc_price
 
             # Получаем исторические данные для ETH и BTC
             data_eth = get_data("ETHUSDT")
@@ -124,24 +139,33 @@ def main():
             # Вычисляем скользящее среднее для полученных данных BTC с периодом 60 минут
             ma_btc = moving_average(data_btc, 60)
 
-
             # Вычисляем изменение скорректированной цены ETH относительно предыдущего значения скользящего среднего в процентах
             change = ((eth_price - (eth_price / btc_price)) - ma_eth[-2]) / ma_eth[-2] * 100
 
-            # Выводим функцию alert с вычисленным изменением цены в консоль
-            print(alert(change))
+            # Отправляем функцию alert с вычисленным изменением цены в Telegram-бот
+            alert(chat_id, change)
 
             # Ждем заданный интервал времени перед следующей проверкой
             time.sleep(interval)
 
         except Exception as e:
             # Выводим сообщение об ошибке, если она произошла
-            print(f"Произошла ошибка: {e}")
+            send_message(chat_id, f"Произошла ошибка: {e}")
 
             # Добавляем время задержки перед повторной попыткой выполнения кода
             time.sleep(interval)
 
+# Функция для запуска бота
+def run_bot():
+    updater = Updater(bot_token)
 
-# Вызываем основной функции, при выполнении условия
+    # Добавляем обработчик команды /start
+    updater.dispatcher.add_handler(CommandHandler("start", start))
+
+    # Запускаем бот
+    updater.start_polling()
+    updater.idle()
+
+# Вызываем функцию run_bot(), при выполнении условия
 if __name__ == "__main__":
-    main()
+    run_bot()
