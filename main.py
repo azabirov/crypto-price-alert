@@ -6,11 +6,7 @@ import time  # Для работы со временем, задержками �
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
 
-bot_token = "TELEGRAM_BOT_TOKEN"
-
-# Указываем свои ключи API и секретный ключ для доступа к Binance API
-api_key = "API_KEY"
-secret_key = "SECRET_KEY"
+bot_token = "TELEGRAM_API_TOKEN"
 
 # Базовый URL-адрес для доступа к Binance Futures API
 base_url = "https://fapi.binance.com"
@@ -25,17 +21,13 @@ params_btc = {
     "symbol": "BTCUSDT"
 }
 
-# Заголовок для запроса, содержащий API-ключ
-headers = {
-    "X-MBX-APIKEY": api_key
-}
 
 # Функция для получения цены указанного фьючерса (ETH или BTC)
 def get_price(params):
     # URL для запроса последней цены фьючерса
     url = base_url + "/fapi/v1/ticker/price"
     # Выполняем запрос к API и сохраняем ответ
-    response = requests.get(url, params=params, headers=headers)
+    response = requests.get(url, params=params)
     # Если запрос выполнен успешно (код состояния 200)
     if response.status_code == 200:
         # Преобразуем ответ в JSON-формат
