@@ -6,7 +6,9 @@ import time  # Для работы со временем, задержками �
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
 
-bot_token = "TELEGRAM_API_TOKEN"
+from config import TELEGRAM_TOKEN
+
+bot_token = TELEGRAM_TOKEN
 
 # Базовый URL-адрес для доступа к Binance Futures API
 base_url = "https://fapi.binance.com"
