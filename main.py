@@ -99,53 +99,52 @@ def alert(chat_id, change):
         # Отправляем сообщение в чат
         send_message(chat_id, message)
 
+
+# Основная функция
+def monitor_prices(context: CallbackContext):
+    chat_id = context.job.context
+
+    # Текущий код main() без while True и time.sleep(interval)
+    try:
+        # Получаем текущую цену ETH и BTC
+        eth_price = get_eth_price()
+        btc_price = get_btc_price()
+
+        eth_btc_ratio = eth_price / btc_price
+
+        # Получаем исторические данные для ETH и BTC
+        data_eth = get_data("ETHUSDT")
+        data_btc = get_data("BTCUSDT")
+
+        # Вычисляем скользящее среднее для полученных данных ETH с периодом 60 минут
+        ma_eth = moving_average(data_eth, 60)
+        # Вычисляем скользящее среднее для полученных данных BTC с периодом 60 минут
+        ma_btc = moving_average(data_btc, 60)
+
+        # Вычисляем изменение скорректированной цены ETH относительно предыдущего значения скользящего среднего в процентах
+        change = ((eth_price - (eth_price / btc_price)) - ma_eth[-2]) / ma_eth[-2] * 100
+
+        # Выводим функцию alert с вычисленным изменением цены в консоль
+        message = alert(chat_id, change)
+        if message:
+            send_message(chat_id, message)
+
+    except Exception as e:
+        # Выводим сообщение об ошибке, если она произошла
+        error_message = f"Произошла ошибка: {e}"
+        send_message(chat_id, error_message)
+
+
 # Функция обработчика команды /start
 def start(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
     # Отправка приветственного сообщения
     send_message(chat_id, "Привет! Я запущен и начинаю отслеживание цен фьючерсов. Буду уведомлять об изменениях!")
-    # Запуск функции main с chat_id
-    main(chat_id)
 
-
-# Основная функция
-def main(chat_id):
-    # Задаем интервал времени между проверками цены (в секундах)
+    # Добавление функции monitor_prices в JobQueue
     interval = 3
+    context.job_queue.run_repeating(monitor_prices, interval=interval, first=0, context=chat_id)
 
-    # Бесконечный цикл для отслеживания цены в реальном времени
-    while True:
-        try:
-            # Получаем текущую цену ETH и BTC
-            eth_price = get_eth_price()
-            btc_price = get_btc_price()
-
-            eth_btc_ratio = eth_price / btc_price
-
-            # Получаем исторические данные для ETH и BTC
-            data_eth = get_data("ETHUSDT")
-            data_btc = get_data("BTCUSDT")
-
-            # Вычисляем скользящее среднее для полученных данных ETH с периодом 60 минут
-            ma_eth = moving_average(data_eth, 60)
-            # Вычисляем скользящее среднее для полученных данных BTC с периодом 60 минут
-            ma_btc = moving_average(data_btc, 60)
-
-            # Вычисляем изменение скорректированной цены ETH относительно предыдущего значения скользящего среднего в процентах
-            change = ((eth_price - (eth_price / btc_price)) - ma_eth[-2]) / ma_eth[-2] * 100
-
-            # Отправляем функцию alert с вычисленным изменением цены в Telegram-бот
-            alert(chat_id, change)
-
-            # Ждем заданный интервал времени перед следующей проверкой
-            time.sleep(interval)
-
-        except Exception as e:
-            # Выводим сообщение об ошибке, если она произошла
-            send_message(chat_id, f"Произошла ошибка: {e}")
-
-            # Добавляем время задержки перед повторной попыткой выполнения кода
-            time.sleep(interval)
 
 # Функция для запуска бота
 def run_bot():
@@ -157,6 +156,7 @@ def run_bot():
     # Запускаем бот
     updater.start_polling()
     updater.idle()
+
 
 # Вызываем функцию run_bot(), при выполнении условия
 if __name__ == "__main__":
