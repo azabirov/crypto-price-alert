@@ -1,12 +1,10 @@
 # Импорт необходимых библиотек
 import requests  # Для выполнения HTTP-запросов к API
 import pandas as pd  # Для работы с данными в виде таблиц (DataFrame)
-import time  # Для работы со временем, задержками и таймерами
-
+import time  # Для работы с временем отправки уведомлений
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
-
-from config import TELEGRAM_TOKEN
+from config import TELEGRAM_TOKEN  # Telegram-токен для работы с ботом
 
 bot_token = TELEGRAM_TOKEN
 
@@ -22,6 +20,8 @@ params_eth = {
 params_btc = {
     "symbol": "BTCUSDT"
 }
+
+ALERT_TIMESTAMPS = {}
 
 
 # Функция для получения цены указанного фьючерса (ETH или BTC)
@@ -84,6 +84,7 @@ def moving_average(data, period):
     return df["ma"].tolist()
 
 
+# Функция отправки сообщений
 def send_message(chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     data = {"chat_id": chat_id, "text": text}
@@ -99,20 +100,23 @@ def alert(chat_id, change):
         # Формируем сообщение
         message = f"Цена фьючерса ETHUSDT изменилась на {change:.2f}% {direction} за последний час."
         # Отправляем сообщение в чат
-        send_message(chat_id, message)
+        return message
 
 
 # Основная функция
 def monitor_prices(context: CallbackContext):
     chat_id = context.job.context
 
-    # Текущий код main() без while True и time.sleep(interval)
+    # Получаем значение alert_timestamps для chat_id или инициализируем его значением None
+    if chat_id not in ALERT_TIMESTAMPS:
+        ALERT_TIMESTAMPS[chat_id] = None
+
+    alert_timeout = 300
+
     try:
         # Получаем текущую цену ETH и BTC
         eth_price = get_eth_price()
         btc_price = get_btc_price()
-
-        eth_btc_ratio = eth_price / btc_price
 
         # Получаем исторические данные для ETH и BTC
         data_eth = get_data("ETHUSDT")
@@ -126,10 +130,21 @@ def monitor_prices(context: CallbackContext):
         # Вычисляем изменение скорректированной цены ETH относительно предыдущего значения скользящего среднего в процентах
         change = ((eth_price - (eth_price / btc_price)) - ma_eth[-2]) / ma_eth[-2] * 100
 
-        # Выводим функцию alert с вычисленным изменением цены в консоль
-        message = alert(chat_id, change)
-        if message:
-            send_message(chat_id, message)
+        # Если изменение больше 1%
+        if abs(change) >= 1:
+            # Получаем текущее время
+            current_timestamp = int(time.time())
+
+            # Проверяем, отправлялось ли уведомление ранее и прошло ли достаточно времени с момента последнего уведомления
+            if ALERT_TIMESTAMPS[chat_id] is None or (current_timestamp - ALERT_TIMESTAMPS[chat_id]) >= alert_timeout:
+                message = alert(chat_id, change)
+                if message:
+                    send_message(chat_id, message)
+                    ALERT_TIMESTAMPS[chat_id] = current_timestamp  # Обновляем время отправки уведомления
+
+        # Если изменение меньше 1% и уведомление было отправлено ранее
+        elif abs(change) < 1 and ALERT_TIMESTAMPS[chat_id] is not None:
+            ALERT_TIMESTAMPS[chat_id] = None  # Сбрасываем время отправки уведомления
 
     except Exception as e:
         # Выводим сообщение об ошибке, если она произошла
