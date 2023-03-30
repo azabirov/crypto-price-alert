@@ -3,7 +3,8 @@ import requests  # Для выполнения HTTP-запросов к API
 import pandas as pd  # Для работы с данными в виде таблиц (DataFrame)
 import time  # Для работы с временем отправки уведомлений
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler, MessageHandler, Filters
+from telegram import ReplyKeyboardMarkup
 from config import TELEGRAM_TOKEN  # Telegram-токен для работы с ботом
 
 bot_token = TELEGRAM_TOKEN
@@ -20,8 +21,6 @@ params_eth = {
 params_btc = {
     "symbol": "BTCUSDT"
 }
-
-ALERT_TIMESTAMPS = {}
 
 
 # Функция для получения цены указанного фьючерса (ETH или BTC)
@@ -93,82 +92,213 @@ def send_message(chat_id, text):
 
 # Функция для отправки уведомления об изменении цены
 def alert(chat_id, change):
-    # Если абсолютное значение изменения больше или равно 1%
-    if abs(change) >= 1:
-        # Определяем направление изменения
-        direction = "вверх" if change > 0 else "вниз"
-        # Формируем сообщение
-        message = f"Цена фьючерса ETHUSDT изменилась на {change:.2f}% {direction} за последний час."
-        # Отправляем сообщение в чат
-        return message
+    # Определяем направление изменения
+    direction = "вверх" if change > 0 else "вниз"
+    # Формируем сообщение
+    message = f"Цена фьючерса ETHUSDT изменилась на {change:.2f}% {direction} за последний час."
+    # Отправляем сообщение в чат
+    return message
+
+
+def settings(update: Update, context: CallbackContext):
+    chat_id = update.effective_chat.id
+    interval = context.user_data.get("interval", 3)
+    alert_timeout = context.user_data.get("alert_timeout", 300)
+    change_threshold = context.user_data.get("change_threshold", 1)
+
+    # Создаем кнопки
+    settings_keyboard = [
+        ["Порог изменения цены", "Интервал обновления данных", "Таймаут уведомления"],
+        ["Назад"]
+    ]
+
+    # Создаем клавиатуру с кнопками
+    reply_markup = ReplyKeyboardMarkup(settings_keyboard, one_time_keyboard=True, resize_keyboard=True)
+
+    current_settings_text = (
+        "Текущие настройки:\n"
+        f"Порог изменения цены: {change_threshold}%\n"
+        f"Интервал обновления данных: {interval} секунд\n"
+        f"Таймаут уведомления: {alert_timeout} секунд\n\n"
+        "Нажмите на одну из кнопок ниже, чтобы изменить соответствующую настройку."
+    )
+
+    update.message.reply_text(current_settings_text, reply_markup=reply_markup)
+
+
+def button_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "settings":
+        settings(update, context)
+    if query.data == "change_threshold":
+        query.edit_message_text("Введите новый порог изменения цены после команды /set_change_threshold (например: /set_change_threshold 1)")
+    elif query.data == "interval":
+        query.edit_message_text("Введите новый интервал обновления данных после команды /set_interval (например: /set_interval 5)")
+    elif query.data == "alert_timeout":
+        query.edit_message_text("Введите новый таймаут уведомлений после команды /set_alert_timeout (например: /set_alert_timeout 300)")
+
+
+def help_command(update: Update, _: CallbackContext):
+    # Отправляем сообщение с инструкциями и кнопкой "Настройки"
+    update.message.reply_text(
+        "Доступные команды:\n"
+        "/start - Запуск мониторинга цен\n"
+        "/stop - Остановка мониторинга цен\n"
+        "/set_change_threshold - Установка порога изменения цены для уведомлений\n"
+        "/set_interval - Установка интервала обновления данных\n"
+        "/set_alert_timeout - Установка времени ожидания между уведомлениями\n"
+        "/help - Показать справочную информацию\n\n"
+        "Используйте кнопку 'Настройки' ниже для быстрого доступа к настройкам:"
+    )
+
+
+def text_message_handler(update: Update, context: CallbackContext):
+    text = update.message.text
+
+    if text == "Настройки":
+        return settings(update, context)
+    elif text == "Порог изменения цены":
+        update.message.reply_text("Введите новый порог изменения цены после команды /set\_change\_threshold \(например: `/set_change_threshold 1`\)", parse_mode='MarkdownV2')
+    elif text == "Интервал обновления данных":
+        update.message.reply_text("Введите новый интервал обновления данных после команды /set\_interval \(например: `/set_interval 5`\)", parse_mode='MarkdownV2')
+    elif text == "Таймаут уведомления":
+        update.message.reply_text("Введите новый таймаут уведомления после команды /set\_alert\_timeout \(например: `/set_alert_timeout 300`\)", parse_mode='MarkdownV2')
+    elif text == "Назад":
+        start(update, context)
+    else:
+        update.message.reply_text(
+            "Я не понимаю эту команду. Пожалуйста, используйте /help для получения списка доступных команд.")
+
+
+def set_alert_timeout(update: Update, context: CallbackContext):
+    try:
+        new_timeout = int(context.args[0])
+        context.user_data["alert_timeout"] = new_timeout
+        update.message.reply_text(f"Время ожидания уведомления успешно изменено на {new_timeout} секунд")
+        start(update, context)
+    except (ValueError, IndexError):
+        update.message.reply_text("Пожалуйста, укажите число секунд после команды /set_alert_timeout")
+
+
+def set_interval(update: Update, context: CallbackContext):
+    try:
+        new_interval = int(context.args[0])
+        context.user_data["interval"] = new_interval
+        update.message.reply_text(f"Интервал мониторинга успешно изменен на {new_interval} секунд")
+        start(update, context)
+    except (ValueError, IndexError):
+        update.message.reply_text("Пожалуйста, укажите число секунд после команды /set_interval")
+
+
+def set_threshold(update: Update, context: CallbackContext):
+    try:
+        new_threshold = float(context.args[0])
+        context.user_data["change_threshold"] = new_threshold
+        update.message.reply_text(f"Порог изменения цены успешно изменен на {new_threshold}%")
+        start(update, context)
+    except (ValueError, IndexError):
+        update.message.reply_text("Пожалуйста, укажите число процентов после команды /set_change_threshold")
 
 
 # Основная функция
 def monitor_prices(context: CallbackContext):
-    chat_id = context.job.context
+    chat_id, alert_timeout, change_threshold, alert_timestamp = context.job.context
 
-    # Получаем значение alert_timestamps для chat_id или инициализируем его значением None
-    if chat_id not in ALERT_TIMESTAMPS:
-        ALERT_TIMESTAMPS[chat_id] = None
+    # Получаем текущую цену ETH и BTC
+    eth_price = get_eth_price()
+    btc_price = get_btc_price()
 
-    alert_timeout = 300
+    # Получаем исторические данные для ETH и BTC
+    data_eth = get_data("ETHUSDT")
+    data_btc = get_data("BTCUSDT")
 
-    try:
-        # Получаем текущую цену ETH и BTC
-        eth_price = get_eth_price()
-        btc_price = get_btc_price()
+    # Вычисляем скользящее среднее для полученных данных ETH с периодом 60 минут
+    ma_eth = moving_average(data_eth, 60)
+    # Вычисляем скользящее среднее для полученных данных BTC с периодом 60 минут
+    ma_btc = moving_average(data_btc, 60)
 
-        # Получаем исторические данные для ETH и BTC
-        data_eth = get_data("ETHUSDT")
-        data_btc = get_data("BTCUSDT")
+    # Вычисляем изменение скорректированной цены ETH относительно предыдущего значения скользящего среднего в процентах
+    change = ((eth_price - (eth_price / btc_price)) - ma_eth[-2]) / ma_eth[-2] * 100
 
-        # Вычисляем скользящее среднее для полученных данных ETH с периодом 60 минут
-        ma_eth = moving_average(data_eth, 60)
-        # Вычисляем скользящее среднее для полученных данных BTC с периодом 60 минут
-        ma_btc = moving_average(data_btc, 60)
+    # Если изменение больше change_threshold
+    if abs(change) >= change_threshold:
+        # Получаем текущее время
+        current_timestamp = int(time.time())
 
-        # Вычисляем изменение скорректированной цены ETH относительно предыдущего значения скользящего среднего в процентах
-        change = ((eth_price - (eth_price / btc_price)) - ma_eth[-2]) / ma_eth[-2] * 100
+        # Проверяем, отправлялось ли уведомление ранее и прошло ли достаточно времени с момента последнего уведомления
+        if alert_timestamp is None or (current_timestamp - alert_timestamp) >= alert_timeout:
+            message = alert(chat_id, change)
+            if message:
+                send_message(chat_id, message)
+                # Обновляем время отправки уведомления
+                context.job.context = (chat_id, alert_timeout, change_threshold, current_timestamp) # Обновляем время отправки уведомления
 
-        # Если изменение больше 1%
-        if abs(change) >= 1:
-            # Получаем текущее время
-            current_timestamp = int(time.time())
-
-            # Проверяем, отправлялось ли уведомление ранее и прошло ли достаточно времени с момента последнего уведомления
-            if ALERT_TIMESTAMPS[chat_id] is None or (current_timestamp - ALERT_TIMESTAMPS[chat_id]) >= alert_timeout:
-                message = alert(chat_id, change)
-                if message:
-                    send_message(chat_id, message)
-                    ALERT_TIMESTAMPS[chat_id] = current_timestamp  # Обновляем время отправки уведомления
-
-        # Если изменение меньше 1% и уведомление было отправлено ранее
-        elif abs(change) < 1 and ALERT_TIMESTAMPS[chat_id] is not None:
-            ALERT_TIMESTAMPS[chat_id] = None  # Сбрасываем время отправки уведомления
-
-    except Exception as e:
-        # Выводим сообщение об ошибке, если она произошла
-        error_message = f"Произошла ошибка: {e}"
-        send_message(chat_id, error_message)
+    # Если изменение меньше change_threshold и уведомление было отправлено ранее
+    elif abs(change) < change_threshold and alert_timestamp is not None:
+        # Сбрасываем время отправки уведомления
+        context.job.context = (chat_id, change_threshold, alert_timeout, None)
 
 
 # Функция обработчика команды /start
 def start(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
-    # Отправка приветственного сообщения
-    send_message(chat_id, "Привет! Я запущен и начинаю отслеживание цен фьючерсов. Буду уведомлять об изменениях!")
+    interval = context.user_data.get("interval", 3)
+    alert_timeout = context.user_data.get("alert_timeout", 300)
+    change_threshold = context.user_data.get("change_threshold", 1)
+    alert_timestamp = 0
+
+    # Создаем кнопку "Настройки"
+    settings_button = [["Настройки"]]
+
+    # Создаем клавиатуру с кнопками
+    reply_markup = ReplyKeyboardMarkup(settings_button, one_time_keyboard=True, resize_keyboard=True)
+
+    # Отправляем приветственное сообщение
+    update.message.reply_text(
+        "Привет! Я бот, который будет уведомлять тебя об изменении цены Ethereum (ETH) относительно Bitcoin (BTC). "
+        "Я буду сообщать тебе, когда изменение цены превысит определенный порог (например, 1%).\n\n"
+        "Чтобы начать работу, нажми на кнопку 'Настройки' или введи /help, чтобы узнать о доступных командах и настройках.",
+        reply_markup=reply_markup,
+    )
 
     # Добавление функции monitor_prices в JobQueue
-    interval = 3
-    context.job_queue.run_repeating(monitor_prices, interval=interval, first=0, context=chat_id)
+    context.job_queue.run_repeating(monitor_prices, interval, context=(chat_id, alert_timeout, change_threshold, alert_timestamp))
+
+
+# Функция обработчика команды /stop
+def stop(update: Update, context: CallbackContext):
+    chat_id = update.effective_chat.id
+
+    # Проверяем, есть ли активный Job для данного chat_id
+    current_job = context.job_queue.get_jobs_by_name(str(chat_id))
+
+    if current_job:
+        current_job[0].schedule_removal()  # Отменяем задачу
+        update.message.reply_text("Мониторинг цен остановлен.")
+    else:
+        update.message.reply_text("Мониторинг цен не был запущен.")
 
 
 # Функция для запуска бота
 def run_bot():
     updater = Updater(bot_token)
 
-    # Добавляем обработчик команды /start
-    updater.dispatcher.add_handler(CommandHandler("start", start))
+    # Получаем диспетчер для регистрации обработчиков
+    dp = updater.dispatcher
+
+    # Регистрация обработчиков команд
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("set_change_threshold", set_threshold))
+    dp.add_handler(CommandHandler("set_interval", set_interval))
+    dp.add_handler(CommandHandler("set_alert_timeout", set_alert_timeout))
+    dp.add_handler(CommandHandler("help", help_command))
+    dp.add_handler(CommandHandler("stop", stop))
+    dp.add_handler(MessageHandler(Filters.text, text_message_handler))
+
+    # Регистрация обработчиков кнопок
+    dp.add_handler(CallbackQueryHandler(button_callback))
 
     # Запускаем бот
     updater.start_polling()
