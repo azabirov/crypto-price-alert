@@ -2,7 +2,7 @@
 import requests  # Для выполнения HTTP-запросов к API
 import pandas as pd  # Для работы с данными в виде таблиц (DataFrame)
 import time  # Для работы с временем отправки уведомлений
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler, MessageHandler, Filters
 from telegram import ReplyKeyboardMarkup
 from config import TELEGRAM_TOKEN  # Telegram-токен для работы с ботом
@@ -105,7 +105,7 @@ def settings(update: Update, context: CallbackContext):
     interval = context.user_data.get("interval", 3)
     alert_timeout = context.user_data.get("alert_timeout", 300)
     change_threshold = context.user_data.get("change_threshold", 1)
-
+    message_id = update.effective_message.message_id
     # Создаем кнопки
     settings_keyboard = [
         ["Порог изменения цены", "Интервал обновления данных", "Таймаут уведомления"],
@@ -116,20 +116,22 @@ def settings(update: Update, context: CallbackContext):
     reply_markup = ReplyKeyboardMarkup(settings_keyboard, one_time_keyboard=True, resize_keyboard=True)
 
     current_settings_text = (
-        "Текущие настройки:\n"
+        "Текущие настройки:\n\n"
         f"Порог изменения цены: {change_threshold}%\n"
         f"Интервал обновления данных: {interval} секунд\n"
         f"Таймаут уведомления: {alert_timeout} секунд\n\n"
-        "Нажмите на одну из кнопок ниже, чтобы изменить соответствующую настройку."
+        "Нажмите на одну из кнопок ниже, чтобы изменить соответствующую настройку\."
     )
 
-    update.message.reply_text(current_settings_text, reply_markup=reply_markup)
+    update.message.reply_text(current_settings_text, reply_markup=reply_markup, parse_mode='MarkdownV2')
+    delete_message(context.bot, chat_id, message_id)
 
 
 def button_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
-
+    message_id = update.effective_message.message_id
+    chat_id = update.effective_chat.id
     if query.data == "settings":
         settings(update, context)
     if query.data == "change_threshold":
@@ -138,12 +140,14 @@ def button_callback(update: Update, context: CallbackContext):
         query.edit_message_text("Введите новый интервал обновления данных после команды /set_interval (например: /set_interval 5)")
     elif query.data == "alert_timeout":
         query.edit_message_text("Введите новый таймаут уведомлений после команды /set_alert_timeout (например: /set_alert_timeout 300)")
-
+    delete_message(context.bot, chat_id, message_id)
 
 def help_command(update: Update, _: CallbackContext):
+    message_id = update.effective_message.message_id
+    chat_id = update.effective_chat.id
     # Отправляем сообщение с инструкциями и кнопкой "Настройки"
     update.message.reply_text(
-        "Доступные команды:\n"
+        "Доступные команды:\n\n"
         "/start - Запуск мониторинга цен\n"
         "/stop - Остановка мониторинга цен\n"
         "/set_change_threshold - Установка порога изменения цены для уведомлений\n"
@@ -152,10 +156,12 @@ def help_command(update: Update, _: CallbackContext):
         "/help - Показать справочную информацию\n\n"
         "Используйте кнопку 'Настройки' ниже для быстрого доступа к настройкам:"
     )
-
+    delete_message(context.bot, chat_id, message_id)
 
 def text_message_handler(update: Update, context: CallbackContext):
     text = update.message.text
+    message_id = update.effective_message.message_id
+    chat_id = update.effective_chat.id
 
     if text == "Настройки":
         return settings(update, context)
@@ -170,36 +176,49 @@ def text_message_handler(update: Update, context: CallbackContext):
     else:
         update.message.reply_text(
             "Я не понимаю эту команду. Пожалуйста, используйте /help для получения списка доступных команд.")
-
+    delete_message(context.bot, chat_id, message_id)
 
 def set_alert_timeout(update: Update, context: CallbackContext):
+    message_id = update.effective_message.message_id
+    chat_id = update.effective_chat.id
+
     try:
         new_timeout = int(context.args[0])
         context.user_data["alert_timeout"] = new_timeout
         update.message.reply_text(f"Время ожидания уведомления успешно изменено на {new_timeout} секунд")
+        delete_message(context.bot, chat_id, message_id)
         start(update, context)
     except (ValueError, IndexError):
         update.message.reply_text("Пожалуйста, укажите число секунд после команды /set_alert_timeout")
 
 
 def set_interval(update: Update, context: CallbackContext):
+    message_id = update.effective_message.message_id
+    chat_id = update.effective_chat.id
+
     try:
         new_interval = int(context.args[0])
         context.user_data["interval"] = new_interval
         update.message.reply_text(f"Интервал мониторинга успешно изменен на {new_interval} секунд")
+        delete_message(context.bot, chat_id, message_id)
         start(update, context)
     except (ValueError, IndexError):
         update.message.reply_text("Пожалуйста, укажите число секунд после команды /set_interval")
-
+        delete_message(context.bot, chat_id, message_id)
 
 def set_threshold(update: Update, context: CallbackContext):
+    message_id = update.effective_message.message_id
+    chat_id = update.effective_chat.id
+
     try:
         new_threshold = float(context.args[0])
         context.user_data["change_threshold"] = new_threshold
         update.message.reply_text(f"Порог изменения цены успешно изменен на {new_threshold}%")
+        delete_message(context.bot, chat_id, message_id)
         start(update, context)
     except (ValueError, IndexError):
         update.message.reply_text("Пожалуйста, укажите число процентов после команды /set_change_threshold")
+        delete_message(context.bot, chat_id, message_id)
 
 
 # Основная функция
@@ -241,6 +260,13 @@ def monitor_prices(context: CallbackContext):
         context.job.context = (chat_id, change_threshold, alert_timeout, None)
 
 
+def delete_message(bot: Bot, chat_id, message_id):
+    try:
+        bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as e:
+        print(f"Не удалось удалить сообщение: {e}")
+
+
 # Функция обработчика команды /start
 def start(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
@@ -255,6 +281,8 @@ def start(update: Update, context: CallbackContext):
     # Создаем клавиатуру с кнопками
     reply_markup = ReplyKeyboardMarkup(settings_button, one_time_keyboard=True, resize_keyboard=True)
 
+    message_id = update.effective_message.message_id
+
     # Отправляем приветственное сообщение
     update.message.reply_text(
         "Привет! Я бот, который будет уведомлять тебя об изменении цены Ethereum (ETH) относительно Bitcoin (BTC). "
@@ -262,6 +290,8 @@ def start(update: Update, context: CallbackContext):
         "Чтобы начать работу, нажми на кнопку 'Настройки' или введи /help, чтобы узнать о доступных командах и настройках.",
         reply_markup=reply_markup,
     )
+
+    delete_message(context.bot, chat_id, message_id)
 
     # Добавление функции monitor_prices в JobQueue
     context.job_queue.run_repeating(monitor_prices, interval, context=(chat_id, alert_timeout, change_threshold, alert_timestamp))
@@ -274,12 +304,15 @@ def stop(update: Update, context: CallbackContext):
     # Проверяем, есть ли активный Job для данного chat_id
     current_job = context.job_queue.get_jobs_by_name(str(chat_id))
 
+    message_id = update.effective_message.message_id
+
     if current_job:
         current_job[0].schedule_removal()  # Отменяем задачу
         update.message.reply_text("Мониторинг цен остановлен.")
     else:
         update.message.reply_text("Мониторинг цен не был запущен.")
 
+    delete_message(context.bot, chat_id, message_id)
 
 # Функция для запуска бота
 def run_bot():
