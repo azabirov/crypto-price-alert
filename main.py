@@ -74,13 +74,13 @@ def send_message(chat_id, text):
 
 
 # Функция для формирования уведомления об изменении цены
-def alert(change, base_asset, quote_asset):
+def alert(change, base_asset, quote_asset, base_price):
     # Определяем направление изменения
     direction = "вверх" if change > 0 else "вниз"
     direction_emoji = "📈" if change > 0 else "📉"
     # Формируем сообщение
     message = f"{direction_emoji} Цена {base_asset}/{quote_asset} изменилась на {change:.2f}% {direction}" \
-              f" относительно последнего часа."
+              f" относительно последнего часа. Текущая цена: {base_price:.2f} {quote_asset}"
     # Возвращаем сообщение
     return message
 
@@ -288,7 +288,7 @@ def monitor_prices(context: CallbackContext):
 
         # Проверяем, отправлялось ли уведомление ранее и прошло ли достаточно времени с момента последнего уведомления
         if alert_timestamp is None or (current_timestamp - alert_timestamp) >= alert_timeout:
-            message = alert(change, base_asset, quote_asset)
+            message = alert(change, base_asset, quote_asset, base_price)
             if message:
                 send_message(chat_id, message)
                 # Обновляем время отправки уведомления
