@@ -162,11 +162,16 @@ def set_assets(update: Update, context: CallbackContext):
     try:
         base_asset = context.args[0]
         quote_asset = context.args[1]
-        context.user_data["base_asset"] = base_asset
-        context.user_data["quote_asset"] = quote_asset
-        update.message.reply_text(f"Отслеживаемая пара активов успешно изменена на {base_asset}/{quote_asset}")
-        delete_message(context.bot, chat_id, message_id)
-        start(update, context)
+
+        if base_asset == quote_asset:
+            update.message.reply_text("Базовый и котировочный активы не должны быть одинаковыми. Пожалуйста, укажите разные активы.")
+        else:
+            context.user_data["base_asset"] = base_asset
+            context.user_data["quote_asset"] = quote_asset
+            update.message.reply_text(f"Отслеживаемая пара активов успешно изменена на {base_asset}/{quote_asset}")
+            delete_message(context.bot, chat_id, message_id)
+            start(update, context)
+
     except (ValueError, IndexError):
         update.message.reply_text("Пожалуйста, укажите пару активов после команды /set_assets (например: `/set_assets DOGE USDT`)")
         delete_message(context.bot, chat_id, message_id)
