@@ -29,33 +29,6 @@ def get_data(symbol):
     return data
 
 
-def get_data(symbol):
-    # URL для запроса свечных данных
-    url = "https://fapi.binance.com/fapi/v1/klines"
-    # Задаем параметры для запроса: символ фьючерса и интервал свечей (1 минута)
-    params = {"symbol": symbol, "interval": "1m", "limit": 61}
-    # Выполняем запрос и преобразуем ответ в JSON
-    response = requests.get(url, params=params)
-
-    # Проверяем, успешен ли запрос
-    if response.status_code != 200:
-        print(f"{symbol} Ошибка: получен код {response.status_code} от Binance API. Сообщение: {response.text}")
-        return []
-
-    response_data = response.json()
-
-    # Создаем пустой список для хранения данных
-    data = []
-    # Обходим все свечи в ответе
-    for candle in response_data:
-        # Извлекаем цену закрытия и время закрытия свечи, преобразуем в нужные типы данных
-        item = {"price": float(candle[4]), "time": int(candle[6])}
-        # Добавляем элемент в список данных
-        data.append(item)
-    # Возвращаем список данных
-    return data
-
-
 # Функция для расчета скользящего среднего на основе данных цен
 def moving_average(data, period):
     # Создаем DataFrame на основе списка данных
@@ -97,6 +70,7 @@ def settings(update: Update, context: CallbackContext):
     # Создаем кнопки для настроек
     settings_keyboard = [
         ["📊 Порог изменения цены", "⏱️ Интервал обновления данных", "🔕 Таймаут уведомления"],
+        ["🎯 Установить ценовые уровни"],
         ["💹 Настройки активов"],
         ["↩️ Назад"]
     ]
@@ -104,12 +78,15 @@ def settings(update: Update, context: CallbackContext):
     # Создаем клавиатуру с кнопками
     reply_markup = ReplyKeyboardMarkup(settings_keyboard, one_time_keyboard=True, resize_keyboard=True)
 
+    price_levels = " ".join(map(str, context.user_data.get("price_levels", [])))
+
     current_settings_text = (
         "🔧 *Здесь вы можете изменить настройки уведомлений о ценах активов. Текущие настройки:*\n\n"
         f"*Отслеживаемая пара активов: {base_asset}/{quote_asset}*\n"
         f"Порог изменения цены: {change_threshold}%\n"
         f"Интервал обновления данных: {interval} секунд\n"
-        f"Таймаут уведомления: {alert_timeout} секунд\n\n"
+        f"Таймаут уведомления: {alert_timeout} секунд\n"
+        f"Ценовые уровни: {price_levels if price_levels else 'Не заданы'}\n\n"
         "Нажмите на одну из кнопок ниже, чтобы изменить соответствующую настройку."
     )
     # Экранируем точки
@@ -134,6 +111,11 @@ def button_callback(update: Update, context: CallbackContext):
         query.edit_message_text("Введите новый интервал обновления данных после команды /set_interval (например: /set_interval 5)")
     elif query.data == "alert_timeout":
         query.edit_message_text("Введите новый таймаут уведомлений после команды /set_alert_timeout (например: /set_alert_timeout 300)")
+    elif query.data == "set_price_levels":
+        query.edit_message_text(
+            "Введите ценовые уровни через пробел после команды /set_price_levels (например: `/set_price_levels 25000 26000 30000`).\n\n"
+            "Это установит ценовые уровни, при достижении которых бот отправит вам уведомление.",
+        )
     delete_message(context.bot, chat_id, message_id)
 
 
@@ -155,23 +137,52 @@ def help_command(update: Update, context: CallbackContext):
     delete_message(context.bot, chat_id, message_id)
 
 
+def update_price_monitor_job_context(update: Update, context: CallbackContext):
+    chat_id = update.effective_chat.id
+
+    # Удаляем старую задачу
+    if 'monitor_job' in context.chat_data:
+        context.chat_data['monitor_job'].schedule_removal()
+        del context.chat_data['monitor_job']
+
+    # Создаем новую задачу с обновленными настройками
+    alert_timeout = context.chat_data.get("alert_timeout", 60)
+    change_threshold = context.chat_data.get("change_threshold", 1)
+    base_asset = context.chat_data.get("base_asset", "ETH")
+    quote_asset = context.chat_data.get("quote_asset", "USDT")
+    price_levels = context.chat_data.get("price_levels", [])
+    interval = context.chat_data.get("interval", 60)
+
+    monitor_job_context = (chat_id, alert_timeout, change_threshold, None, base_asset, quote_asset, price_levels, None)
+    monitor_job = context.job_queue.run_repeating(monitor_prices, interval, context=monitor_job_context)
+
+    # Сохраняем новую задачу в chat_data
+    context.chat_data['monitor_job'] = monitor_job
+
+
 def set_assets(update: Update, context: CallbackContext):
     message_id = update.effective_message.message_id
     chat_id = update.effective_chat.id
 
     try:
-        base_asset = context.args[0]
-        quote_asset = context.args[1]
+        base_asset = context.args[0].upper()
+        quote_asset = context.args[1].upper()
 
         if base_asset == quote_asset:
-            update.message.reply_text("Базовый и котировочный активы не должны быть одинаковыми. Пожалуйста, укажите разные активы.")
-        else:
-            context.user_data["base_asset"] = base_asset
-            context.user_data["quote_asset"] = quote_asset
-            update.message.reply_text(f"Отслеживаемая пара активов успешно изменена на {base_asset}/{quote_asset}")
-            delete_message(context.bot, chat_id, message_id)
-            start(update, context)
+            update.message.reply_text("Базовый и котируемый активы не могут быть одинаковыми. Пожалуйста, попробуйте снова.")
+            return
 
+        # Останавливаем текущую задачу отслеживания цен, если она существует
+        if "price_monitor_job" in context.chat_data:
+            context.chat_data["price_monitor_job"].schedule_removal()
+            del context.chat_data["price_monitor_job"]
+
+        context.user_data["base_asset"] = base_asset
+        context.user_data["quote_asset"] = quote_asset
+        update.message.reply_text(f"Отслеживаемая пара активов успешно изменена на {base_asset}/{quote_asset}")
+        delete_message(context.bot, chat_id, message_id)
+        update_price_monitor_job_context(update, context)
+        start(update, context)
     except (ValueError, IndexError):
         update.message.reply_text("Пожалуйста, укажите пару активов после команды /set_assets (например: `/set_assets DOGE USDT`)")
         delete_message(context.bot, chat_id, message_id)
@@ -189,11 +200,16 @@ def text_message_handler(update: Update, context: CallbackContext):
         update.message.reply_text("Введите новый порог изменения цены _\(в процентах\)_ после команды /set\_change\_threshold \(например: `/set_change_threshold 1`\)", parse_mode='MarkdownV2')
     elif text == "⏱️ Интервал обновления данных":
         update.message.reply_text("Введите новый интервал обновления данных _\(в секундах\)_ после команды /set\_interval \(например: `/set_interval 5`\)", parse_mode='MarkdownV2')
-    elif text == "⌛ Таймаут уведомления":
+    elif text == "🔕 Таймаут уведомления":
         update.message.reply_text("Введите новый таймаут уведомления _\(в секундах\)_ после команды /set\_alert\_timeout \(например: `/set_alert_timeout 300`\)", parse_mode='MarkdownV2')
     elif text == "💹 Настройки активов":
         update.message.reply_text(
-            "Введите новую пару активов для отслеживания в формате BASE/QUOTE \(например, DOGE/USDT\) после команды /set\_assets \(например: `/set_assets DOGE USDT`\)", parse_mode='MarkdownV2')
+            "Введите новую пару активов для отслеживания в формате BASE/QUOTE \(например, DOGE USDT\) после команды /set\_assets \(например: `/set_assets DOGE USDT`\)", parse_mode='MarkdownV2')
+    elif text == "🎯 Установить ценовые уровни":
+        update.message.reply_text(
+            "Введите ценовые уровни через пробел после команды \/set_price_levels \(например: `/set_price_levels 25000 26000 30000`\)\.\n\n"
+            "Это установит ценовые уровни\, при достижении которых бот отправит вам уведомление\.",
+            parse_mode='MarkdownV2',)
     elif text == "↩️ Назад":
         start(update, context)
     else:
@@ -212,6 +228,7 @@ def set_alert_timeout(update: Update, context: CallbackContext):
         context.user_data["alert_timeout"] = new_timeout
         update.message.reply_text(f"Время ожидания уведомления успешно изменено на {new_timeout} секунд")
         delete_message(context.bot, chat_id, message_id)
+        update_price_monitor_job_context(update, context)
         start(update, context)
     except (ValueError, IndexError):
         update.message.reply_text("Пожалуйста, укажите число секунд после команды /set_alert_timeout")
@@ -227,6 +244,7 @@ def set_interval(update: Update, context: CallbackContext):
         context.user_data["interval"] = new_interval
         update.message.reply_text(f"Интервал мониторинга успешно изменен на {new_interval} секунд")
         delete_message(context.bot, chat_id, message_id)
+        update_price_monitor_job_context(update, context)
         start(update, context)
     except (ValueError, IndexError):
         update.message.reply_text("Пожалуйста, укажите число секунд после команды /set_interval")
@@ -243,9 +261,26 @@ def set_threshold(update: Update, context: CallbackContext):
         context.user_data["change_threshold"] = new_threshold
         update.message.reply_text(f"Порог изменения цены успешно изменен на {new_threshold}%")
         delete_message(context.bot, chat_id, message_id)
+        update_price_monitor_job_context(update, context)
         start(update, context)
     except (ValueError, IndexError):
         update.message.reply_text("Пожалуйста, укажите число процентов после команды /set_change_threshold")
+        delete_message(context.bot, chat_id, message_id)
+
+
+def set_price_levels(update: Update, context: CallbackContext):
+    message_id = update.effective_message.message_id
+    chat_id = update.effective_chat.id
+
+    try:
+        price_levels = [float(price) for price in context.args]
+        context.user_data["price_levels"] = price_levels
+        update.message.reply_text(f"Ценовые уровни успешно установлены: {', '.join(map(str, price_levels))}")
+        delete_message(context.bot, chat_id, message_id)
+        update_price_monitor_job_context(update, context)
+        start(update, context)
+    except (ValueError, IndexError):
+        update.message.reply_text("Пожалуйста, укажите ценовые уровни после команды /set_price_levels (например: `/set_price_levels 25000 26000 30000`)")
         delete_message(context.bot, chat_id, message_id)
 
 
@@ -270,9 +305,15 @@ def get_asset_price(asset: str, quote_asset: str = "USDT") -> float:
         print(f"Неизвестная ошибка: {e}")
 
 
+def send_notification(bot, chat_id, base_asset, quote_asset, current_price, reached_price_level):
+    message = f"🔔 Цена {base_asset}{quote_asset} достигла установленного ценового уровня {reached_price_level:.2f}.\n\nТекущая цена: {current_price:.2f} {quote_asset}"
+    bot.send_message(chat_id=chat_id, text=message)
+
+
 # Основная функция
 def monitor_prices(context: CallbackContext):
-    chat_id, alert_timeout, change_threshold, alert_timestamp, base_asset, quote_asset = context.job.context
+    chat_id, alert_timeout, change_threshold, alert_timestamp, base_asset, quote_asset, \
+    price_levels, previous_price = context.job.context
 
     # Получаем текущую цену базового актива и актива-котировки
     base_price = get_asset_price(base_asset, quote_asset)
@@ -286,23 +327,32 @@ def monitor_prices(context: CallbackContext):
     # Вычисляем изменение скорректированной цены базового актива относительно предыдущего значения скользящего среднего в процентах
     change = (base_price - ma_base[-2]) / ma_base[-2] * 100
 
+    # Получаем текущее время
+    current_timestamp = int(time.time())
+
     # Если изменение больше change_threshold
     if abs(change) >= change_threshold:
-        # Получаем текущее время
-        current_timestamp = int(time.time())
-
         # Проверяем, отправлялось ли уведомление ранее и прошло ли достаточно времени с момента последнего уведомления
         if alert_timestamp is None or (current_timestamp - alert_timestamp) >= alert_timeout:
             message = alert(change, base_asset, quote_asset, base_price)
             if message:
                 send_message(chat_id, message)
                 # Обновляем время отправки уведомления
-                context.job.context = (chat_id, alert_timeout, change_threshold, current_timestamp, base_asset, quote_asset)
+                alert_timestamp = current_timestamp
 
-    # Если изменение меньше change_threshold и уведомление было отправлено ранее
-    elif abs(change) < change_threshold and alert_timestamp is not None:
-        # Сбрасываем время отправки уведомления
-        context.job.context = (chat_id, alert_timeout, change_threshold, None, base_asset, quote_asset)
+    for price_level in price_levels:
+        if (base_price >= price_level >= previous_price) or (base_price <= price_level <= previous_price):
+            send_notification(context.bot, chat_id, base_asset, quote_asset, base_price,
+                              reached_price_level=price_level)
+            price_levels.remove(price_level)  # Удаляем уровень, так как он был достигнут
+
+            # Обновляем значение price_levels в context.job.context
+            context.job.context = (chat_id, alert_timeout, change_threshold, alert_timestamp, base_asset, quote_asset,
+                                   price_levels, base_price)
+
+    # Обновляем значения в context.job.context
+    context.job.context = (chat_id, alert_timeout, change_threshold, alert_timestamp, base_asset, quote_asset,
+                           price_levels, base_price)
 
 
 # Функция для удаления сообщений
@@ -322,6 +372,9 @@ def start(update: Update, context: CallbackContext):
     change_threshold = context.user_data.get("change_threshold", 1)
     base_asset = context.user_data.get("base_asset", "ETH")
     quote_asset = context.user_data.get("quote_asset", "USDT")
+    base_price = get_asset_price(base_asset, quote_asset)
+    price_levels = context.user_data.get("price_levels", [])
+    previous_price = context.user_data.get("previous_price", base_price)
     alert_timestamp = 0
 
     # Создаем кнопку "Настройки"
@@ -332,19 +385,21 @@ def start(update: Update, context: CallbackContext):
 
     message_id = update.effective_message.message_id
 
+    base_price_markdown = str(base_price).replace('.', r'\.')
+    change_threshold_markdown = str(change_threshold).replace('.', r'\.')
     # Отправляем приветственное сообщение
     update.message.reply_text(
         f"👋 Привет\! Я отслеживаю цену {base_asset}/{quote_asset} и оповещаю об изменениях\.\n\n"
-        "Я буду сообщать тебе, когда изменение цены превысит определенный порог _\(например, 1%\)_\.\n\n"
-        "_Чтобы начать работу, нажми на кнопку 'Настройки' или введи /help, чтобы узнать о доступных командах и настройках\._",
+        f"Я буду сообщать тебе, когда изменение цены превысит определенный порог _\(больше или меньше чем на {change_threshold_markdown}%\)_\.\n\n"
+        f"Текущая цена: *{base_price_markdown}*\n\n" 
+        "_Чтобы настроить параметры, нажми на кнопку 'Настройки' или введи /help, чтобы узнать о доступных командах и настройках\._",
         reply_markup=reply_markup, parse_mode='MarkdownV2',
     )
 
     delete_message(context.bot, chat_id, message_id)
 
     # Добавление функции monitor_prices в JobQueue
-    #context.job_queue.run_repeating(monitor_prices, interval, context=(chat_id, alert_timeout, change_threshold, alert_timestamp))
-    context.job_queue.run_repeating(monitor_prices, interval, context=(chat_id, alert_timeout, change_threshold, alert_timestamp, base_asset, quote_asset), name=str(chat_id))
+    context.chat_data['monitor_job'] = context.job_queue.run_repeating(monitor_prices, interval, context=(chat_id, alert_timeout, change_threshold, alert_timestamp, base_asset, quote_asset, price_levels, previous_price))
 
 
 # Функция обработчика команды /stop
@@ -380,6 +435,7 @@ def run_bot():
     dp.add_handler(CommandHandler("help", help_command))
     dp.add_handler(CommandHandler("stop", stop))
     dp.add_handler(CommandHandler("set_assets", set_assets))
+    dp.add_handler(CommandHandler("set_price_levels", set_price_levels))
     dp.add_handler(MessageHandler(Filters.text, text_message_handler))
 
     # Регистрация обработчиков кнопок
